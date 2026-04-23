@@ -1,0 +1,427 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Whose World</title>
+    <style>
+        body { 
+            margin: 0; 
+            overflow: hidden; 
+            font-family: 'Microsoft YaHei', 'Segoe UI', sans-serif; 
+            user-select: none; /* 禁止选中文本 */
+        }
+        #ui {
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            pointer-events: none;
+            display: flex;
+            flex-direction: column;
+            justify-content: center;
+            align-items: center;
+        }
+        #crosshair {
+            width: 20px;
+            height: 20px;
+            border: 2px solid rgba(255, 255, 255, 0.9);
+            border-radius: 50%;
+            position: absolute;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+            background-color: rgba(0, 0, 0, 0.1);
+            z-index: 10;
+        }
+        #crosshair::after {
+            content: '';
+            position: absolute;
+            top: 50%;
+            left: 50%;
+            width: 4px;
+            height: 4px;
+            background: white;
+            transform: translate(-50%, -50%);
+            border-radius: 50%;
+        }
+        #instructions {
+            background: rgba(0, 0, 0, 0.6);
+            backdrop-filter: blur(5px);
+            color: white;
+            padding: 30px 40px;
+            border-radius: 15px;
+            text-align: center;
+            pointer-events: auto;
+            cursor: pointer;
+            border: 1px solid rgba(255,255,255,0.2);
+            box-shadow: 0 10px 30px rgba(0,0,0,0.5);
+            transition: opacity 0.3s;
+        }
+        #instructions:hover {
+            background: rgba(0, 0, 0, 0.8);
+        }
+        h1 { margin: 0 0 10px 0; font-size: 32px; letter-spacing: 2px; color: #4caf50; text-shadow: 2px 2px 0 #000; }
+        p { margin: 8px 0; font-size: 16px; color: #ddd; }
+        .key { 
+            background: #333; 
+            padding: 2px 6px; 
+            border-radius: 4px; 
+            border: 1px solid #555; 
+            font-family: monospace; 
+            color: #fff;
+            font-weight: bold;
+        }
+        #hud {
+            position: absolute;
+            top: 20px;
+            left: 20px;
+            color: white;
+            background: rgba(0,0,0,0.4);
+            padding: 15px;
+            border-radius: 8px;
+            font-size: 14px;
+            pointer-events: none;
+            border-left: 4px solid #4caf50;
+        }
+        #toolbar {
+            position: absolute;
+            bottom: 20px;
+            left: 50%;
+            transform: translateX(-50%);
+            display: flex;
+            gap: 10px;
+            background: rgba(0,0,0,0.5);
+            padding: 10px;
+            border-radius: 10px;
+            pointer-events: none;
+        }
+        .slot {
+            width: 40px;
+            height: 40px;
+            border: 2px solid #555;
+            border-radius: 5px;
+            opacity: 0.5;
+            transition: all 0.2s;
+        }
+        .slot.active {
+            border-color: white;
+            opacity: 1;
+            transform: scale(1.1);
+            box-shadow: 0 0 10px rgba(255,255,255,0.5);
+        }
+    </style>
+</head>
+<body>
+
+    <!-- 界面 UI -->
+    <div id="ui">
+        <div id="crosshair"></div>
+        
+        <div id="instructions">
+            <h1>Whose World</h1>
+            <p>点击屏幕开始冒险</p>
+            <br>
+            <p><span class="key">W</span> <span class="key">A</span> <span class="key">S</span> <span class="key">D</span> &nbsp; 移动</p>
+            <p><span class="key">SPACE</span> &nbsp; 跳跃</p>
+            <p><span class="key">鼠标左键</span> &nbsp; 破坏方块</p>
+            <p><span class="key">鼠标右键</span> &nbsp; 放置方块</p>
+            <p><span class="key">1</span> <span class="key">2</span> <span class="key">3</span> &nbsp; 切换方块类型</p>
+        </div>
+
+        <div id="hud">
+            <div>坐标: <span id="coords">0, 0, 0</span></div>
+            <div>方块数: <span id="block-count">0</span></div>
+            <div>FPS: <span id="fps">0</span></div>
+        </div>
+
+        <div id="toolbar">
+            <div class="slot active" id="slot-0" style="background-color: #5da130;"></div>
+            <div class="slot" id="slot-1" style="background-color: #8f563b;"></div>
+            <div class="slot" id="slot-2" style="background-color: #757575;"></div>
+        </div>
+    </div>
+
+    <!-- 引入 Three.js -->
+    <script type="importmap">
+        {
+            "imports": {
+                "three": "https://unpkg.com/three@0.160.0/build/three.module.js",
+                "three/addons/": "https://unpkg.com/three@0.160.0/examples/jsm/"
+            }
+        }
+    </script>
+
+    <script type="module">
+        import * as THREE from 'three';
+        import { PointerLockControls } from 'three/addons/controls/PointerLockControls.js';
+
+        // --- 核心配置 ---
+        const BLOCK_SIZE = 10; // 方块尺寸：修正比例，10 比 50 更适合人物比例
+        const PLAYER_HEIGHT = 18; // 玩家高度：约 1.8 个方块高
+        const PLAYER_SPEED = 400.0;
+        const JUMP_FORCE = 350.0;
+        
+        // --- 全局变量 ---
+        let camera, scene, renderer, controls;
+        const objects = []; // 存储所有方块
+        let raycaster;
+        
+        // 物理变量
+        let moveForward = false;
+        let moveBackward = false;
+        let moveLeft = false;
+        let moveRight = false;
+        let canJump = false;
+        
+        let prevTime = performance.now();
+        const velocity = new THREE.Vector3();
+        const direction = new THREE.Vector3();
+        
+        // 材质与工具
+        let blockMaterials = [];
+        let currentMaterialIndex = 0;
+        let blockGeometry; // 共享几何体以优化性能
+
+        init();
+        animate();
+
+        function init() {
+            // 1. 场景与相机
+            scene = new THREE.Scene();
+            scene.background = new THREE.Color(0x87CEEB);
+            scene.fog = new THREE.Fog(0x87CEEB, 200, 900); // 增加雾效距离
+
+            camera = new THREE.PerspectiveCamera(75, window.innerWidth / window.innerHeight, 1, 1000);
+            camera.position.y = PLAYER_HEIGHT; // 设置初始高度
+
+            // 2. 灯光
+            const ambientLight = new THREE.AmbientLight(0xcccccc, 0.6);
+            scene.add(ambientLight);
+
+            const dirLight = new THREE.DirectionalLight(0xffffff, 0.8);
+            dirLight.position.set(100, 200, 50);
+            dirLight.castShadow = true;
+            dirLight.shadow.camera.top = 200;
+            dirLight.shadow.camera.bottom = -200;
+            dirLight.shadow.camera.left = -200;
+            dirLight.shadow.camera.right = 200;
+            scene.add(dirLight);
+
+            // 3. 控制器
+            controls = new PointerLockControls(camera, document.body);
+
+            const instructions = document.getElementById('instructions');
+            instructions.addEventListener('click', () => controls.lock());
+
+            controls.addEventListener('lock', () => instructions.style.display = 'none');
+            controls.addEventListener('unlock', () => instructions.style.display = 'block');
+
+            scene.add(controls.getObject());
+
+            // 4. 键盘监听
+            document.addEventListener('keydown', onKeyDown);
+            document.addEventListener('keyup', onKeyUp);
+
+            // 5. 鼠标交互 (核心修复：阻止默认行为)
+            raycaster = new THREE.Raycaster();
+            // 使用 mousedown 而不是 click，响应更快
+            document.addEventListener('mousedown', (event) => {
+                if (controls.isLocked) {
+                    onMouseClick(event);
+                }
+            });
+
+            // 6. 生成资源
+            generateTextures();
+            blockGeometry = new THREE.BoxGeometry(BLOCK_SIZE, BLOCK_SIZE, BLOCK_SIZE);
+
+            // 7. 生成地形
+            generateWorld();
+
+            // 8. 渲染器
+            renderer = new THREE.WebGLRenderer({ antialias: true });
+            renderer.setPixelRatio(window.devicePixelRatio);
+            renderer.setSize(window.innerWidth, window.innerHeight);
+            renderer.shadowMap.enabled = true;
+            document.body.appendChild(renderer.domElement);
+
+            window.addEventListener('resize', onWindowResize);
+        }
+
+        function generateTextures() {
+            const createTexture = (colorHex, noiseAmount) => {
+                const canvas = document.createElement('canvas');
+                canvas.width = 64;
+                canvas.height = 64;
+                const ctx = canvas.getContext('2d');
+                
+                // 底色
+                ctx.fillStyle = colorHex;
+                ctx.fillRect(0, 0, 64, 64);
+                
+                // 噪点
+                for(let i=0; i<400; i++) {
+                    ctx.fillStyle = `rgba(0,0,0,${Math.random() * noiseAmount})`;
+                    ctx.fillRect(Math.random()*64, Math.random()*64, 4, 4);
+                    ctx.fillStyle = `rgba(255,255,255,${Math.random() * (noiseAmount/2)})`;
+                    ctx.fillRect(Math.random()*64, Math.random()*64, 4, 4);
+                }
+                
+                const tex = new THREE.CanvasTexture(canvas);
+                tex.magFilter = THREE.NearestFilter; // 像素风格
+                return new THREE.MeshLambertMaterial({ map: tex });
+            };
+
+            blockMaterials.push(createTexture('#5da130', 0.2)); // 草地
+            blockMaterials.push(createTexture('#8f563b', 0.15)); // 泥土
+            blockMaterials.push(createTexture('#757575', 0.25)); // 石头
+        }
+
+        function generateWorld() {
+            // 地面
+            const floorGeo = new THREE.PlaneGeometry(2000, 2000);
+            floorGeo.rotateX(-Math.PI / 2);
+            const floorMat = new THREE.MeshBasicMaterial({ color: 0x228B22 });
+            const floor = new THREE.Mesh(floorGeo, floorMat);
+            scene.add(floor);
+
+            // 初始方块群
+            for (let i = 0; i < 300; i++) {
+                const mat = blockMaterials[Math.floor(Math.random() * blockMaterials.length)];
+                const mesh = new THREE.Mesh(blockGeometry, mat);
+                
+                // 随机位置，对齐网格
+                mesh.position.x = (Math.floor(Math.random() * 40 - 20) * BLOCK_SIZE) + (BLOCK_SIZE/2);
+                mesh.position.y = (BLOCK_SIZE/2); // 放在地面上
+                mesh.position.z = (Math.floor(Math.random() * 40 - 20) * BLOCK_SIZE) + (BLOCK_SIZE/2);
+                
+                scene.add(mesh);
+                objects.push(mesh);
+            }
+            updateUI();
+        }
+
+        function onKeyDown(event) {
+            switch (event.code) {
+                case 'KeyW': moveForward = true; break;
+                case 'KeyA': moveLeft = true; break;
+                case 'KeyS': moveBackward = true; break;
+                case 'KeyD': moveRight = true; break;
+                case 'Space': if (canJump) velocity.y += JUMP_FORCE; canJump = false; break;
+                case 'Digit1': setMaterial(0); break;
+                case 'Digit2': setMaterial(1); break;
+                case 'Digit3': setMaterial(2); break;
+            }
+        }
+
+        function onKeyUp(event) {
+            switch (event.code) {
+                case 'KeyW': moveForward = false; break;
+                case 'KeyA': moveLeft = false; break;
+                case 'KeyS': moveBackward = false; break;
+                case 'KeyD': moveRight = false; break;
+            }
+        }
+
+        function setMaterial(index) {
+            currentMaterialIndex = index;
+            document.querySelectorAll('.slot').forEach((el, i) => {
+                el.classList.toggle('active', i === index);
+            });
+        }
+
+        function onMouseClick(event) {
+            // 核心修复：阻止右键菜单
+            event.preventDefault();
+
+            // 射线从屏幕中心发出
+            raycaster.setFromCamera(new THREE.Vector2(0, 0), camera);
+            const intersects = raycaster.intersectObjects(objects);
+
+            if (intersects.length > 0) {
+                const intersect = intersects[0];
+                
+                // 交互距离限制
+                if (intersect.distance > 60) return; // 稍微增加了一点距离
+
+                if (event.button === 0) { 
+                    // 左键：破坏
+                    scene.remove(intersect.object);
+                    objects.splice(objects.indexOf(intersect.object), 1);
+                } else if (event.button === 2) {
+                    // 右键：放置
+                    const voxel = new THREE.Mesh(blockGeometry, blockMaterials[currentMaterialIndex]);
+                    
+                    // 计算位置：当前方块位置 + 法线方向 * 方块大小
+                    voxel.position.copy(intersect.object.position)
+                        .add(intersect.face.normal.multiplyScalar(BLOCK_SIZE));
+                    
+                    scene.add(voxel);
+                    objects.push(voxel);
+                }
+                updateUI();
+            }
+        }
+
+        function updateUI() {
+            document.getElementById('block-count').innerText = objects.length;
+            const pos = controls.getObject().position;
+            document.getElementById('coords').innerText = 
+                `${Math.round(pos.x)}, ${Math.round(pos.y)}, ${Math.round(pos.z)}`;
+        }
+
+        function onWindowResize() {
+            camera.aspect = window.innerWidth / window.innerHeight;
+            camera.updateProjectionMatrix();
+            renderer.setSize(window.innerWidth, window.innerHeight);
+        }
+
+        function animate() {
+            requestAnimationFrame(animate);
+
+            const time = performance.now();
+            const delta = (time - prevTime) / 1000;
+
+            // 物理计算
+            if (controls.isLocked) {
+                // 减速 (摩擦力)
+                velocity.x -= velocity.x * 10.0 * delta;
+                velocity.z -= velocity.z * 10.0 * delta;
+                velocity.y -= 9.8 * 100.0 * delta; // 重力
+
+                direction.z = Number(moveForward) - Number(moveBackward);
+                direction.x = Number(moveRight) - Number(moveLeft);
+                direction.normalize();
+
+                if (moveForward || moveBackward) velocity.z -= direction.z * PLAYER_SPEED * delta;
+                if (moveLeft || moveRight) velocity.x -= direction.x * PLAYER_SPEED * delta;
+
+                controls.moveRight(-velocity.x * delta);
+                controls.moveForward(-velocity.z * delta);
+                
+                controls.getObject().position.y += (velocity.y * delta);
+
+                // 简单的地面碰撞检测
+                // 如果玩家高度低于玩家身高的一半，就视为在地面上
+                if (controls.getObject().position.y < PLAYER_HEIGHT) {
+                    velocity.y = 0;
+                    controls.getObject().position.y = PLAYER_HEIGHT;
+                    canJump = true;
+                }
+                
+                updateUI(); // 实时更新坐标
+            }
+
+            // FPS 计算
+            if (Math.random() > 0.95) {
+                document.getElementById('fps').innerText = Math.round(1 / delta);
+            }
+
+            prevTime = time;
+            renderer.render(scene, camera);
+        }
+    </script>
+</body>
+</html>
